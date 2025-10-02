@@ -3,10 +3,6 @@ import re
 from datetime import datetime
 from collections import Counter
 from itertools import chain, combinations
-from typing import Optional, Union
-
-# Disable aggressive file watching to avoid inotify limits on managed hosts (e.g., Streamlit Cloud)
-os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "none")
 
 import numpy as np
 import pandas as pd
@@ -17,6 +13,11 @@ import matplotlib.pyplot as plt
 
 from dotenv import load_dotenv
 from apify_client import ApifyClient
+
+try:
+    from wordcloud import WordCloud
+except ImportError:
+    WordCloud = None
 
 try:
     import networkx as nx
@@ -38,8 +39,6 @@ st.set_page_config(
 
 load_dotenv()
 APIFY_TOKEN = os.getenv("APIFY_TOKEN")
-if not APIFY_TOKEN and "APIFY_TOKEN" in st.secrets:
-    APIFY_TOKEN = st.secrets["APIFY_TOKEN"]
 
 if not APIFY_TOKEN:
     st.error("APIFY_TOKEN not found. Please add it to your environment before running the dashboard.")
@@ -68,7 +67,7 @@ PRODUCT_TYPE_MAP = {
 DAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
-def format_number(value: Optional[Union[float, int]], is_percent: bool = False) -> str:
+def format_number(value: float | int | None, is_percent: bool = False) -> str:
     if value is None or (isinstance(value, (float, np.floating)) and np.isnan(value)):
         return "–"
     if is_percent:
@@ -132,7 +131,7 @@ def flatten_comments(row) -> str:
     return " ".join(comments)
 
 
-def analyze_sentiment(text: str) -> Optional[float]:
+def analyze_sentiment(text: str) -> float | None:
     if TextBlob is None or not text:
         return np.nan
     try:
@@ -141,7 +140,7 @@ def analyze_sentiment(text: str) -> Optional[float]:
         return np.nan
 
 
-def sentiment_label(score: Optional[float], neutral_window: float = 0.05) -> str:
+def sentiment_label(score: float | None, neutral_window: float = 0.05) -> str:
     if score is None or np.isnan(score):
         return "neutral"
     if score > neutral_window:
@@ -151,7 +150,7 @@ def sentiment_label(score: Optional[float], neutral_window: float = 0.05) -> str
     return "neutral"
 
 
-def get_image_url(post: pd.Series) -> Optional[str]:
+def get_image_url(post: pd.Series) -> str | None:
     candidate_fields = [
         "displayUrl",
         "display_url",
@@ -182,7 +181,7 @@ def fetch_instagram_posts(
     mode: str,
     query: str,
     max_posts: int,
-    owner_lock: Optional[str],
+    owner_lock: str | None,
 ) -> pd.DataFrame:
     client = ApifyClient(APIFY_TOKEN)
     if mode == "Hashtag":
@@ -296,7 +295,7 @@ def apply_filters(
     return filtered.reset_index(drop=True)
 
 
-def compute_growth(series: pd.Series) -> Optional[float]:
+def compute_growth(series: pd.Series) -> float | None:
     clean_series = series.dropna()
     if clean_series.empty or len(clean_series) < 2:
         return np.nan
@@ -366,7 +365,30 @@ def render_hashtag_analysis(df: pd.DataFrame) -> None:
             use_container_width=True,
             height=300,
         )
-    st.caption("Top hashtags ranked by frequency within the filtered posts. Use the table to identify recurring themes quickly.")
+    st.caption("Top hashtags ranked by frequency within the filtered posts.")
+    wordcloud_tabs = st.tabs(["Hashtag Word Cloud", "Caption Keyword Cloud"])
+    with wordcloud_tabs[0]:
+        if WordCloud is None:
+            st.warning("Install `wordcloud` to render this visualization.")
+        else:
+            wc = WordCloud(background_color="white", width=900, height=400).generate(" ".join(all_hashtags))
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.imshow(wc, interpolation="bilinear")
+            ax.axis("off")
+            st.pyplot(fig, use_container_width=True)
+    with wordcloud_tabs[1]:
+        caption_tokens = list(chain.from_iterable(df["caption_tokens"].tolist()))
+        if not caption_tokens:
+            st.info("No caption keywords available for the current selection.")
+        elif WordCloud is None:
+            st.warning("Install `wordcloud` to render this visualization.")
+        else:
+            wc = WordCloud(background_color="white", width=900, height=400).generate(" ".join(caption_tokens))
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.imshow(wc, interpolation="bilinear")
+            ax.axis("off")
+            st.pyplot(fig, use_container_width=True)
+    st.caption("Word clouds highlight the dominant hashtags and caption themes driving engagement.")
     if nx is None:
         st.warning("Install `networkx` to view the hashtag co-occurrence network graph.")
         st.divider()
@@ -473,13 +495,11 @@ def render_audience_engagement(df: pd.DataFrame) -> None:
     if scatter_df.empty:
         st.info("Not enough engagement data to render the caption length scatterplot.")
     else:
-        scatter_df = scatter_df.copy()
-        bubble_size = np.clip(scatter_df["likesCount"].fillna(0), a_min=0, a_max=None) + 1
         fig = px.scatter(
             scatter_df,
             x="caption_length",
             y="engagement_rate_pct",
-            size=bubble_size,
+            size="likesCount",
             color="productTypeDisplay",
             hover_data={
                 "ownerUsername": True,
@@ -643,6 +663,8 @@ def main() -> None:
     if "last_params" not in st.session_state:
         st.session_state["last_params"] = {}
     missing_modules = []
+    if WordCloud is None:
+        missing_modules.append("wordcloud")
     if nx is None:
         missing_modules.append("networkx")
     if TextBlob is None:
