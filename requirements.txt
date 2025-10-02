@@ -1,0 +1,6 @@
+plotly
+numpy
+matplotlib
+streamlit
+pandas
+openai>=1.30.0
